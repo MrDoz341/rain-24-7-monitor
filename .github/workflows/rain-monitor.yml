@@ -1,16 +1,17 @@
 name: 🌧️ Rain.gg 24/7 Monitor
 
 on:
-  # تشغيل كل دقيقتين
   schedule:
-    - cron: '*/2 * * * *'
+    - cron: '*/2 * * * *'  # كل دقيقتين
   
-  # تشغيل يدوي من واجهة GitHub
-  workflow_dispatch:
-  
-  # تشغيل عند push لتحديث الكود
+  workflow_dispatch:  # تشغيل يدوي
   push:
     branches: [ main ]
+
+# أذونات للـ GITHUB_TOKEN
+permissions:
+  contents: write
+  actions: read
 
 jobs:
   monitor:
@@ -26,10 +27,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+          cache: 'npm'
       
       - name: 📦 Install dependencies
         run: |
-          npm init -y
+          npm init -y -q
           npm install axios puppeteer cheerio
       
       - name: 🚀 Create monitoring script
@@ -39,10 +41,7 @@ jobs:
           const puppeteer = require('puppeteer');
           const fs = require('fs').promises;
           
-          // Discord webhook (سيتغير لاحقاً)
           const WEBHOOK_URL = process.env.DISCORD_WEBHOOK || '';
-          
-          // مسار ملف الإحصائيات
           const STATS_FILE = 'stats.json';
           
           async function checkRain() {
@@ -50,130 +49,112 @@ jobs:
             let browser;
             
             try {
-              // تحميل الإحصائيات السابقة
-              let stats = { checks: 0, rains: 0, lastRain: null };
+              // تحميل الإحصائيات
+              let stats = { checks: 0, rains: 0, lastRain: null, lastCheck: new Date().toISOString() };
               try {
                 const statsData = await fs.readFile(STATS_FILE, 'utf8');
                 stats = JSON.parse(statsData);
+                stats.checks = (stats.checks || 0) + 1;
               } catch (e) {
-                console.log('No stats file found, creating new one');
+                console.log('Creating new stats file');
+                stats.checks = 1;
               }
               
-              stats.checks++;
-              
-              // تشغيل المتصفح headless
               browser = await puppeteer.launch({
                 headless: 'new',
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
               });
               
               const page = await browser.newPage();
               
-              // تعيين user-agent طبيعي
-              await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+              // تجنب الحظر
+              await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
               
-              // الانتقال للموقع
+              // زيادة timeout
+              await page.setDefaultNavigationTimeout(60000);
+              
               console.log('🌐 Navigating to rain.gg...');
               await page.goto('https://rain.gg', {
-                waitUntil: 'networkidle2',
-                timeout: 30000
+                waitUntil: 'domcontentloaded',
+                timeout: 45000
               });
               
-              // انتظار تحميل المحتوى
-              await page.waitForTimeout(5000);
+              // انتظار أذكى
+              await Promise.race([
+                page.waitForSelector('body', { timeout: 10000 }),
+                page.waitForTimeout(8000)
+              ]);
               
-              // الحصول على محتوى الصفحة
-              const pageContent = await page.content();
               const pageText = await page.evaluate(() => document.body.innerText);
               
-              // التحقق من وجود حدث المطر
-              const hasUmbrella = pageText.includes('Grab your umbrellas!');
-              const hasJoin = pageText.includes('Join free rain') || 
-                            pageText.includes('Join now');
+              const hasRain = pageText.includes('Grab your umbrellas!') && 
+                            (pageText.includes('Join free rain') || pageText.includes('Join now'));
               
-              const hasRain = hasUmbrella && hasJoin;
+              console.log(`🔍 Rain detected: ${hasRain}`);
               
-              console.log(`🔍 Check results:`);
-              console.log(`   - Umbrella text: ${hasUmbrella}`);
-              console.log(`   - Join text: ${hasJoin}`);
-              console.log(`   - RAIN DETECTED: ${hasRain}`);
-              
-              // إذا وجدنا مطراً
-              if (hasRain) {
-                stats.rains++;
+              if (hasRain && WEBHOOK_URL) {
+                stats.rains = (stats.rains || 0) + 1;
                 stats.lastRain = new Date().toISOString();
                 
-                console.log('🌧️ RAIN DETECTED!');
-                
-                // إرسال إشعار Discord إذا كان Webhook موجود
-                if (WEBHOOK_URL) {
-                  try {
-                    await axios.post(WEBHOOK_URL, {
-                      content: "@everyone 🚨 **RAIN IS LIVE ON RAIN.GG!** 🚨",
-                      embeds: [{
-                        title: "🌧️ RAIN EVENT DETECTED!",
-                        description: "Quick! Go to rain.gg to join the rain!",
-                        color: 3066993,
-                        timestamp: new Date().toISOString(),
-                        url: "https://rain.gg",
-                        footer: { text: "GitHub Actions Monitor • Auto-detected" }
-                      }]
-                    });
-                    console.log('✅ Discord notification sent');
-                  } catch (error) {
-                    console.log('❌ Failed to send Discord notification:', error.message);
-                  }
+                try {
+                  await axios.post(WEBHOOK_URL, {
+                    content: "🌧️ **RAIN DETECTED ON RAIN.GG!**",
+                    embeds: [{
+                      title: "Quick! Join the Rain!",
+                      url: "https://rain.gg",
+                      color: 3066993,
+                      timestamp: new Date().toISOString()
+                    }]
+                  }, { timeout: 5000 });
+                  console.log('✅ Discord notification sent');
+                } catch (error) {
+                  console.log('⚠️ Could not send Discord notification');
                 }
               }
               
-              // حفظ الإحصائيات
+              stats.lastCheck = new Date().toISOString();
               await fs.writeFile(STATS_FILE, JSON.stringify(stats, null, 2));
               
-              // تحديث صفحة HTML
               await updateHTML(stats);
               
-              console.log(`📊 Stats updated: ${stats.checks} checks, ${stats.rains} rains detected`);
+              console.log(`📊 Stats: ${stats.checks} checks, ${stats.rains} rains`);
               
               return { detected: hasRain, stats };
               
             } catch (error) {
-              console.error('❌ Error during check:', error.message);
+              console.error('❌ Error:', error.message);
               return { error: error.message };
             } finally {
-              if (browser) {
-                await browser.close();
-              }
+              if (browser) await browser.close();
             }
           }
           
           async function updateHTML(stats) {
             try {
-              // قراءة ملف HTML الحالي
               let html = await fs.readFile('index.html', 'utf8');
               
-              // تحديث وقت آخر فحص
               const now = new Date();
               const timeStr = now.toLocaleString('en-US', {
-                year: 'numeric',
-                month: 'long',
+                month: 'short',
                 day: 'numeric',
                 hour: '2-digit',
                 minute: '2-digit',
-                second: '2-digit',
-                timeZoneName: 'short'
+                second: '2-digit'
               });
               
-              // تحديث الإحصائيات في HTML
+              // تحديث وقت الفحص
               html = html.replace(
-                /id="lastCheck">.*?</,
+                /id="lastCheck">[^<]*</,
                 `id="lastCheck">${timeStr}<`
               );
               
+              // تحديث عدد مرات المطر
               html = html.replace(
                 /id="rainCount">\d+</,
-                `id="rainCount">${stats.rains}<`
+                `id="rainCount">${stats.rains || 0}<`
               );
               
+              // تحديث آخر مطر
               if (stats.lastRain) {
                 const lastRainDate = new Date(stats.lastRain);
                 const lastRainStr = lastRainDate.toLocaleString('en-US', {
@@ -183,24 +164,28 @@ jobs:
                   minute: '2-digit'
                 });
                 html = html.replace(
-                  /id="lastRain">.*?</,
+                  /id="lastRain">[^<]*</,
                   `id="lastRain">${lastRainStr}<`
+                );
+              } else {
+                html = html.replace(
+                  /id="lastRain">[^<]*</,
+                  `id="lastRain">Never<`
                 );
               }
               
-              // كتابة HTML المحدث
               await fs.writeFile('index.html', html);
-              console.log('✅ HTML page updated');
+              console.log('✅ HTML updated');
               
             } catch (error) {
-              console.log('❌ Error updating HTML:', error.message);
+              console.log('⚠️ Could not update HTML');
             }
           }
           
           // التشغيل الرئيسي
           (async () => {
             const result = await checkRain();
-            console.log('🏁 Monitor check completed');
+            console.log('🏁 Check completed');
             process.exit(result.error ? 1 : 0);
           })();
           EOF
@@ -209,28 +194,47 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: node monitor.js
+        timeout-minutes: 3  # منع التجميد
       
-      - name: 💾 Commit and push updates
+      - name: 💾 Commit updates
+        if: always()
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
           
-          # إضافة الملفات التي تغيرت
-          git add index.html stats.json 2>/dev/null || echo "No files to add"
+          git add -A
           
-          # عمل commit إذا كان هناك تغييرات
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "📊 Update monitor stats - $(date +'%Y-%m-%d %H:%M:%S')"
-            git push origin main
-            echo "✅ Changes pushed to GitHub"
+            git commit -m "📊 Update: $(date +'%Y-%m-%d %H:%M')"
+            git push
+            echo "✅ Changes pushed"
           fi
       
-      - name: 📤 Upload stats as artifact
-        uses: actions/upload-artifact@v3
+      - name: 📤 Upload artifact (v4 الجديدة)
+        if: always()
+        uses: actions/upload-artifact@v4  # ⚠️ تم التحديث إلى v4
         with:
-          name: monitor-stats
+          name: monitor-data
           path: |
             stats.json
+            monitor.js
           retention-days: 7
+          if-no-files-found: warn
+      
+      - name: 📝 Create summary
+        if: always()
+        run: |
+          echo "## 📊 Monitor Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "stats.json" ]; then
+            echo "✅ Stats file updated successfully" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "```json" >> $GITHUB_STEP_SUMMARY
+            cat stats.json >> $GITHUB_STEP_SUMMARY
+            echo "```" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ No stats file created" >> $GITHUB_STEP_SUMMARY
+          fi
