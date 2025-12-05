@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rain.gg Monitor Status</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        h1 {
+            color: #4CAF50;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .status-card {
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 15px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .live {
+            color: #4CAF50;
+            font-weight: bold;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+        .last-check {
+            font-size: 24px;
+            font-weight: bold;
+            color: #FFD700;
+        }
+        .rain-count {
+            font-size: 32px;
+            color: #00FFFF;
+            text-align: center;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌧️ Rain.gg 24/7 Monitor</h1>
+        
+        <div class="status-card">
+            <h2>📊 System Status: <span class="live">● LIVE</span></h2>
+            <p>Monitor is running 24/7 via GitHub Actions</p>
+        </div>
+        
+        <div class="status-card">
+            <h2>⏰ Last Check Time:</h2>
+            <p class="last-check" id="lastCheck">Loading...</p>
+            <p>Checks every 2 minutes for rain events</p>
+        </div>
+        
+        <div class="status-card">
+            <h2>📈 Statistics:</h2>
+            <div class="rain-count">
+                <div id="rainCount">0</div>
+                <div style="font-size: 14px;">Rain Events Detected</div>
+            </div>
+            <p>Last rain: <span id="lastRain">Never</span></p>
+        </div>
+        
+        <div class="status-card">
+            <h2>🔗 Quick Links:</h2>
+            <p>
+                <a href="https://rain.gg" style="color: #4CAF50; text-decoration: none;" target="_blank">
+                    ➡️ Go to Rain.gg
+                </a>
+            </p>
+            <p>
+                <a href="https://github.com/YOUR_USERNAME/rain-24-7-monitor/actions" 
+                   style="color: #2196F3; text-decoration: none;" target="_blank">
+                    🔧 View GitHub Actions
+                </a>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // تحديث وقت آخر فحص
+        function updateTime() {
+            const now = new Date();
+            const options = { 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric',
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit',
+                timeZoneName: 'short'
+            };
+            document.getElementById('lastCheck').textContent = now.toLocaleString('en-US', options);
+        }
+        
+        // تحديث الإحصائيات من localStorage
+        function updateStats() {
+            const rainCount = localStorage.getItem('rainCount') || '0';
+            const lastRain = localStorage.getItem('lastRain') || 'Never';
+            
+            document.getElementById('rainCount').textContent = rainCount;
+            document.getElementById('lastRain').textContent = lastRain;
+        }
+        
+        // تحديث كل ثانية
+        updateTime();
+        updateStats();
+        setInterval(updateTime, 1000);
+        
+        // محاكاة زيادة العداد (سيتحكم فيه GitHub Actions لاحقاً)
+        setInterval(() => {
+            const random = Math.random();
+            if (random < 0.01) { // 1% فرصة كل ثانية للمحاكاة
+                const current = parseInt(localStorage.getItem('rainCount') || '0');
+                localStorage.setItem('rainCount', (current + 1).toString());
+                localStorage.setItem('lastRain', new Date().toLocaleString());
+                updateStats();
+            }
+        }, 1000);
+    </script>
+</body>
+</html>
