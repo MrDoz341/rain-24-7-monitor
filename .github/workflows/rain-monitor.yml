@@ -1,17 +1,22 @@
 name: 🌧️ Rain.gg 24/7 Monitor
 
 on:
+  # تشغيل كل 5 دقائق
   schedule:
-    - cron: '*/2 * * * *'  # كل دقيقتين
+    - cron: '*/5 * * * *'
   
-  workflow_dispatch:  # تشغيل يدوي
+  # تشغيل يدوي
+  workflow_dispatch:
+  
+  # تشغيل عند تحديث الكود
   push:
     branches: [ main ]
 
-# أذونات للـ GITHUB_TOKEN
+# الأذونات المطلوبة
 permissions:
   contents: write
-  actions: read
+  pages: write
+  id-token: write
 
 jobs:
   monitor:
@@ -27,12 +32,46 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
       
       - name: 📦 Install dependencies
         run: |
-          npm init -y -q
-          npm install axios puppeteer cheerio
+          # إنشاء package.json إذا لم يوجد
+          if [ ! -f package.json ]; then
+            echo '{
+              "name": "rain-monitor",
+              "version": "1.0.0",
+              "description": "24/7 Rain.gg Monitor",
+              "main": "monitor.js",
+              "scripts": {
+                "start": "node monitor.js"
+              },
+              "dependencies": {
+                "axios": "^1.6.0",
+                "puppeteer": "^21.0.0"
+              },
+              "engines": {
+                "node": ">=18.0.0"
+              }
+            }' > package.json
+          fi
+          
+          # إنشاء package-lock.json لتجنب الخطأ
+          npm init -y --silent
+          
+          # تثبيت puppeteer مع إصلاح المشاكل المعروفة
+          npm install puppeteer@21.0.0 --no-save
+          npm install axios@1.6.0 --no-save
+          
+          # تثبيت متطلبات النظام لـ puppeteer
+          sudo apt-get update
+          sudo apt-get install -y wget ca-certificates fonts-liberation \
+            libappindicator3-1 libasound2 libatk-bridge2.0-0 libatk1.0-0 \
+            libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 \
+            libgbm1 libgcc1 libglib2.0-0 libgtk-3-0 libnspr4 libnss3 \
+            libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 \
+            libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 \
+            libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 \
+            libxtst6 lsb-release xdg-utils
       
       - name: 🚀 Create monitoring script
         run: |
@@ -40,201 +79,373 @@ jobs:
           const axios = require('axios');
           const puppeteer = require('puppeteer');
           const fs = require('fs').promises;
+          const path = require('path');
           
+          // Discord webhook (اختياري)
           const WEBHOOK_URL = process.env.DISCORD_WEBHOOK || '';
+          
+          // ملف الإحصائيات
           const STATS_FILE = 'stats.json';
           
+          async function initStats() {
+            try {
+              await fs.access(STATS_FILE);
+              const data = await fs.readFile(STATS_FILE, 'utf8');
+              return JSON.parse(data);
+            } catch (error) {
+              // إنشاء ملف إحصائيات جديد
+              const initialStats = {
+                checks: 0,
+                rains: 0,
+                lastRain: null,
+                lastCheck: null,
+                createdAt: new Date().toISOString()
+              };
+              await fs.writeFile(STATS_FILE, JSON.stringify(initialStats, null, 2));
+              return initialStats;
+            }
+          }
+          
+          async function updateStats(newStats) {
+            try {
+              const stats = await initStats();
+              const updated = {
+                ...stats,
+                ...newStats,
+                lastCheck: new Date().toISOString()
+              };
+              await fs.writeFile(STATS_FILE, JSON.stringify(updated, null, 2));
+              return updated;
+            } catch (error) {
+              console.error('Error updating stats:', error.message);
+              return null;
+            }
+          }
+          
           async function checkRain() {
-            console.log('🌤️ Starting rain check...');
-            let browser;
+            console.log('🚀 Starting rain check at:', new Date().toISOString());
+            let browser = null;
             
             try {
-              // تحميل الإحصائيات
-              let stats = { checks: 0, rains: 0, lastRain: null, lastCheck: new Date().toISOString() };
-              try {
-                const statsData = await fs.readFile(STATS_FILE, 'utf8');
-                stats = JSON.parse(statsData);
-                stats.checks = (stats.checks || 0) + 1;
-              } catch (e) {
-                console.log('Creating new stats file');
-                stats.checks = 1;
-              }
+              // تحديث الإحصائيات - زيادة عدد الفحوصات
+              const stats = await initStats();
+              stats.checks = (stats.checks || 0) + 1;
               
+              console.log('🌐 Launching browser...');
+              
+              // تشغيل المتصفح مع إعدادات مبسطة
               browser = await puppeteer.launch({
                 headless: 'new',
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+                args: [
+                  '--no-sandbox',
+                  '--disable-setuid-sandbox',
+                  '--disable-dev-shm-usage',
+                  '--disable-gpu',
+                  '--disable-web-security',
+                  '--disable-features=IsolateOrigins,site-per-process'
+                ],
+                timeout: 30000
               });
               
               const page = await browser.newPage();
               
-              // تجنب الحظر
+              // تعيين user-agent عادي
               await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
               
-              // زيادة timeout
-              await page.setDefaultNavigationTimeout(60000);
+              // زيادة مهلة الانتظار
+              await page.setDefaultNavigationTimeout(45000);
+              await page.setDefaultTimeout(45000);
               
-              console.log('🌐 Navigating to rain.gg...');
-              await page.goto('https://rain.gg', {
-                waitUntil: 'domcontentloaded',
-                timeout: 45000
+              console.log('📡 Navigating to rain.gg...');
+              
+              // الانتقال للموقع
+              try {
+                await page.goto('https://rain.gg', {
+                  waitUntil: 'domcontentloaded',
+                  timeout: 45000
+                });
+              } catch (navError) {
+                console.log('Navigation timeout, trying load event...');
+                await page.goto('https://rain.gg', {
+                  waitUntil: 'load',
+                  timeout: 30000
+                });
+              }
+              
+              // انتظار قصير لتحميل المحتوى
+              await page.waitForTimeout(5000);
+              
+              // الحصول على محتوى الصفحة
+              const pageText = await page.evaluate(() => {
+                return document.body.innerText || document.body.textContent || '';
               });
               
-              // انتظار أذكى
-              await Promise.race([
-                page.waitForSelector('body', { timeout: 10000 }),
-                page.waitForTimeout(8000)
-              ]);
+              // التحقق من وجود حدث المطر
+              const hasUmbrella = pageText.includes('Grab your umbrellas!');
+              const hasJoin = pageText.includes('Join free rain') || 
+                            pageText.includes('Join now') ||
+                            pageText.includes('Join the rain');
               
-              const pageText = await page.evaluate(() => document.body.innerText);
+              console.log('🔍 Scan results:');
+              console.log('  - Umbrella text found:', hasUmbrella);
+              console.log('  - Join text found:', hasJoin);
               
-              const hasRain = pageText.includes('Grab your umbrellas!') && 
-                            (pageText.includes('Join free rain') || pageText.includes('Join now'));
+              const hasRain = hasUmbrella && hasJoin;
               
-              console.log(`🔍 Rain detected: ${hasRain}`);
-              
-              if (hasRain && WEBHOOK_URL) {
+              if (hasRain) {
+                console.log('🎉 RAIN DETECTED!');
                 stats.rains = (stats.rains || 0) + 1;
                 stats.lastRain = new Date().toISOString();
                 
-                try {
-                  await axios.post(WEBHOOK_URL, {
-                    content: "🌧️ **RAIN DETECTED ON RAIN.GG!**",
-                    embeds: [{
-                      title: "Quick! Join the Rain!",
-                      url: "https://rain.gg",
-                      color: 3066993,
-                      timestamp: new Date().toISOString()
-                    }]
-                  }, { timeout: 5000 });
-                  console.log('✅ Discord notification sent');
-                } catch (error) {
-                  console.log('⚠️ Could not send Discord notification');
+                // إرسال إشعار Discord إذا كان موجوداً
+                if (WEBHOOK_URL && WEBHOOK_URL.includes('discord.com')) {
+                  try {
+                    console.log('📨 Sending Discord notification...');
+                    await axios.post(WEBHOOK_URL, {
+                      content: "🌧️ **RAIN DETECTED ON RAIN.GG!**",
+                      embeds: [{
+                        title: "Quick! Join Now!",
+                        description: "Rain event is live on rain.gg",
+                        color: 3066993,
+                        url: "https://rain.gg",
+                        timestamp: new Date().toISOString(),
+                        footer: {
+                          text: "GitHub Actions Monitor • Auto-detected"
+                        }
+                      }]
+                    }, { timeout: 10000 });
+                    console.log('✅ Discord notification sent');
+                  } catch (discordError) {
+                    console.log('⚠️ Could not send Discord notification:', discordError.message);
+                  }
                 }
+              } else {
+                console.log('☀️ No rain detected');
               }
               
-              stats.lastCheck = new Date().toISOString();
-              await fs.writeFile(STATS_FILE, JSON.stringify(stats, null, 2));
+              // حفظ الإحصائيات المحدثة
+              await updateStats(stats);
               
+              // تحديث صفحة HTML
               await updateHTML(stats);
               
-              console.log(`📊 Stats: ${stats.checks} checks, ${stats.rains} rains`);
+              console.log('📊 Final stats:', {
+                checks: stats.checks,
+                rains: stats.rains,
+                lastRain: stats.lastRain || 'Never'
+              });
               
-              return { detected: hasRain, stats };
+              return {
+                success: true,
+                rainDetected: hasRain,
+                stats: stats
+              };
               
             } catch (error) {
-              console.error('❌ Error:', error.message);
-              return { error: error.message };
+              console.error('❌ Error during monitoring:', error.message);
+              console.error('Stack:', error.stack);
+              
+              // تسجيل الفحص الفاشل في الإحصائيات
+              try {
+                const stats = await initStats();
+                stats.checks = (stats.checks || 0) + 1;
+                await updateStats(stats);
+              } catch (statsError) {
+                console.log('Could not update error stats:', statsError.message);
+              }
+              
+              return {
+                success: false,
+                error: error.message
+              };
+              
             } finally {
-              if (browser) await browser.close();
+              if (browser) {
+                try {
+                  await browser.close();
+                  console.log('🔒 Browser closed');
+                } catch (closeError) {
+                  console.log('Warning: Could not close browser properly');
+                }
+              }
             }
           }
           
           async function updateHTML(stats) {
             try {
-              let html = await fs.readFile('index.html', 'utf8');
+              let html = '';
+              const htmlPath = 'index.html';
               
-              const now = new Date();
-              const timeStr = now.toLocaleString('en-US', {
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
-              });
-              
-              // تحديث وقت الفحص
-              html = html.replace(
-                /id="lastCheck">[^<]*</,
-                `id="lastCheck">${timeStr}<`
-              );
-              
-              // تحديث عدد مرات المطر
-              html = html.replace(
-                /id="rainCount">\d+</,
-                `id="rainCount">${stats.rains || 0}<`
-              );
-              
-              // تحديث آخر مطر
-              if (stats.lastRain) {
-                const lastRainDate = new Date(stats.lastRain);
-                const lastRainStr = lastRainDate.toLocaleString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit'
-                });
-                html = html.replace(
-                  /id="lastRain">[^<]*</,
-                  `id="lastRain">${lastRainStr}<`
-                );
-              } else {
-                html = html.replace(
-                  /id="lastRain">[^<]*</,
-                  `id="lastRain">Never<`
-                );
+              // قراءة ملف HTML الحالي
+              try {
+                html = await fs.readFile(htmlPath, 'utf8');
+              } catch (error) {
+                console.log('index.html not found, creating basic one');
+                html = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                  <meta charset="UTF-8">
+                  <title>Rain Monitor</title>
+                  <style>
+                    body { font-family: Arial; padding: 20px; }
+                    .status { color: green; font-weight: bold; }
+                  </style>
+                </head>
+                <body>
+                  <h1>🌧️ Rain.gg Monitor</h1>
+                  <p>Last check: <span id="lastCheck">Loading...</span></p>
+                  <p>Rain events: <span id="rainCount">0</span></p>
+                  <p>Total checks: <span id="totalChecks">0</span></p>
+                  <p>Last rain: <span id="lastRain">Never</span></p>
+                </body>
+                </html>
+                `;
               }
               
-              await fs.writeFile('index.html', html);
-              console.log('✅ HTML updated');
+              // تنسيق الوقت
+              const formatTime = (dateStr) => {
+                if (!dateStr) return 'Never';
+                try {
+                  const date = new Date(dateStr);
+                  return date.toLocaleString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                  });
+                } catch {
+                  return dateStr;
+                }
+              };
+              
+              // تحديث القيم في HTML
+              const lastCheckTime = formatTime(new Date().toISOString());
+              html = html.replace(
+                /id="lastCheck"[^>]*>([^<]*)</,
+                `id="lastCheck">${lastCheckTime}<`
+              );
+              
+              const rainCount = stats.rains || 0;
+              html = html.replace(
+                /id="rainCount"[^>]*>([^<]*)</,
+                `id="rainCount">${rainCount}<`
+              );
+              
+              const totalChecks = stats.checks || 0;
+              html = html.replace(
+                /id="totalChecks"[^>]*>([^<]*)</,
+                `id="totalChecks">${totalChecks}<`
+              );
+              
+              const lastRainTime = formatTime(stats.lastRain);
+              html = html.replace(
+                /id="lastRain"[^>]*>([^<]*)</,
+                `id="lastRain">${lastRainTime}<`
+              );
+              
+              // حفظ HTML المحدث
+              await fs.writeFile(htmlPath, html);
+              console.log('✅ HTML page updated');
               
             } catch (error) {
-              console.log('⚠️ Could not update HTML');
+              console.log('⚠️ Could not update HTML:', error.message);
             }
           }
           
           // التشغيل الرئيسي
           (async () => {
+            console.log('========================================');
+            console.log('🌧️ RAIN.GG 24/7 MONITOR STARTING');
+            console.log('========================================');
+            
             const result = await checkRain();
-            console.log('🏁 Check completed');
-            process.exit(result.error ? 1 : 0);
+            
+            console.log('========================================');
+            console.log('🏁 MONITOR COMPLETED');
+            console.log('Status:', result.success ? 'SUCCESS' : 'FAILED');
+            if (result.rainDetected) console.log('🎉 RAIN WAS DETECTED!');
+            console.log('========================================');
+            
+            // إعطاء وقت للإغلاق
+            setTimeout(() => {
+              process.exit(result.success ? 0 : 1);
+            }, 1000);
+            
           })();
           EOF
+          
+          echo "✅ Monitoring script created"
       
       - name: 🔍 Run rain check
+        id: monitor
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: node monitor.js
-        timeout-minutes: 3  # منع التجميد
+        run: |
+          echo "🚀 Starting monitor script..."
+          timeout 120s node monitor.js
+          MONITOR_EXIT=$?
+          
+          if [ $MONITOR_EXIT -eq 124 ]; then
+            echo "⚠️ Monitor timed out after 2 minutes"
+          elif [ $MONITOR_EXIT -ne 0 ]; then
+            echo "❌ Monitor failed with exit code $MONITOR_EXIT"
+          else
+            echo "✅ Monitor completed successfully"
+          fi
       
-      - name: 💾 Commit updates
+      - name: 💾 Commit and push changes
         if: always()
         run: |
+          echo "📦 Preparing to commit changes..."
+          
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
           
-          git add -A
+          # إضافة الملفات التي تغيرت
+          git add index.html stats.json 2>/dev/null || echo "No HTML/stats to add"
           
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
+          # التحقق إذا كان هناك تغييرات
+          if ! git diff --cached --quiet || ! git diff --quiet; then
+            echo "📝 Changes detected, committing..."
+            git commit -m "📊 Monitor update $(date +'%Y-%m-%d %H:%M:%S')" || echo "Commit failed"
+            git pull --rebase || echo "Rebase failed, continuing"
+            git push || echo "Push failed"
+            echo "✅ Changes pushed to repository"
           else
-            git commit -m "📊 Update: $(date +'%Y-%m-%d %H:%M')"
-            git push
-            echo "✅ Changes pushed"
+            echo "📭 No changes to commit"
           fi
       
-      - name: 📤 Upload artifact (v4 الجديدة)
+      - name: 📤 Upload artifact (v4)
         if: always()
-        uses: actions/upload-artifact@v4  # ⚠️ تم التحديث إلى v4
+        uses: actions/upload-artifact@v4
         with:
           name: monitor-data
           path: |
             stats.json
             monitor.js
-          retention-days: 7
           if-no-files-found: warn
+          retention-days: 3
       
-      - name: 📝 Create summary
+      - name: 📊 Create summary report
         if: always()
         run: |
-          echo "## 📊 Monitor Results" >> $GITHUB_STEP_SUMMARY
+          echo "## 📈 Rain Monitor Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Date:** $(date)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ -f "stats.json" ]; then
-            echo "✅ Stats file updated successfully" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "```json" >> $GITHUB_STEP_SUMMARY
+            echo "### 📊 Current Statistics" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
             cat stats.json >> $GITHUB_STEP_SUMMARY
-            echo "```" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
           else
-            echo "⚠️ No stats file created" >> $GITHUB_STEP_SUMMARY
+            echo "### ⚠️ No Statistics File" >> $GITHUB_STEP_SUMMARY
+            echo "Stats file not found or not created." >> $GITHUB_STEP_SUMMARY
           fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Automated by GitHub Actions*" >> $GITHUB_STEP_SUMMARY
